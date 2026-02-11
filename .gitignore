@@ -1,0 +1,28 @@
+# Entorno virtual
+.venv/
+venv/
+
+# Archivos de Python compilados
+__pycache__/
+*.pyc
+*.pyo
+
+# Configuración de editores
+.vscode/
+.idea/
+
+# Datos y salidas locales (no subir datos reales)
+registros.txt
+BaseDeDatos_2026_2.xlsx
+resumen_diario_*.xlsx
+detalle_asistencias_*.csv
+asistencias_por_becado_*.xlsx
+desglose_factura_*.xlsx
+reporte_periodo_*.pdf
+
+# Sistema
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
