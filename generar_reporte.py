@@ -2,12 +2,13 @@
 import os
 import tempfile
 import shutil
+import argparse
 from datetime import time, datetime, timedelta
 import pandas as pd
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
 from reportlab.lib.colors import HexColor
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import mm
 from reportlab.pdfbase import pdfmetrics
@@ -18,8 +19,8 @@ DESAYUNO_START = time(8, 30)
 DESAYUNO_END = time(12, 15)
 COMIDA_START = time(12, 25)
 COMIDA_END = time(16, 30)
-PRECIO_DESAYUNO = 84 #120 real
-PRECIO_COMIDA = 98 #140 real
+PRECIO_DESAYUNO = 77
+PRECIO_COMIDA = 91
 
 # Tolerancia en minutos para aceptar marcas cercanas al inicio/fin
 TOLERANCIA_MIN = 5  # cambia a 0 si no quieres tolerancia
@@ -29,7 +30,7 @@ REGISTROS_TXT = 'registros.txt'
 EXCEL_PADRON = 'BaseDeDatos_2026_2.xlsx'
 SHEET_PADRON = 'Base de datos (nueva)'
 
-# Carpeta de salida (por defecto la carpeta actual)
+# Carpeta base de salida (por defecto la carpeta actual)
 OUT_DIR = os.path.abspath('.')
 
 # Nombre de archivo de fuente Roboto Slab (colócala en la carpeta del script si la tienes)
@@ -77,6 +78,25 @@ def safe_save(func_save, target_path):
     except Exception:
         raise
 
+# ---------------- Argumentos de línea de comandos ----------------
+parser = argparse.ArgumentParser(description="Generar reportes de asistencia y desglose fiscal por periodo.")
+parser.add_argument('--start', help="Fecha inicio del corte (DD-MM-YYYY o YYYY-MM-DD)", default=None)
+parser.add_argument('--end', help="Fecha fin del corte (DD-MM-YYYY o YYYY-MM-DD)", default=None)
+args = parser.parse_args()
+
+def parse_date_flexible(s):
+    if s is None:
+        return None
+    for fmt in ('%d-%m-%Y', '%Y-%m-%d', '%d/%m/%Y'):
+        try:
+            return datetime.strptime(s, fmt).date()
+        except Exception:
+            continue
+    raise ValueError(f"Formato de fecha no reconocido: {s}. Usa DD-MM-YYYY o YYYY-MM-DD.")
+
+start_arg = parse_date_flexible(args.start) if args.start else None
+end_arg = parse_date_flexible(args.end) if args.end else None
+
 # ---------------- Registrar fuente (Roboto Slab) y estilos ----------------
 FONT_NAME = 'RobotoSlab'
 FALLBACK_FONT = 'Helvetica'
@@ -104,6 +124,29 @@ df = df.dropna(subset=['FechaHora']).copy()
 df['Fecha'] = df['FechaHora'].dt.date
 df['Hora'] = df['FechaHora'].dt.time
 df['ID'] = pd.to_numeric(df['ID'], errors='coerce').astype('Int64')
+
+# ---------------- Determinar periodo de corte ----------------
+fechas_all = pd.to_datetime(df['Fecha']).dt.date
+if fechas_all.empty:
+    min_date = max_date = datetime.now().date()
+else:
+    min_date = fechas_all.min()
+    max_date = fechas_all.max()
+
+inicio = start_arg if start_arg else min_date
+fin = end_arg if end_arg else max_date
+
+# Validación simple: si inicio > fin, intercambiar
+if inicio > fin:
+    inicio, fin = fin, inicio
+
+# Filtrar registros al periodo seleccionado (inclusive)
+df = df[(df['Fecha'] >= inicio) & (df['Fecha'] <= fin)].copy()
+
+# Si después del filtro no hay datos, avisar y salir
+if df.empty:
+    print(f"No hay registros en el periodo seleccionado: {inicio} a {fin}.")
+    raise SystemExit(0)
 
 # Asignar servicio con tolerancia
 df['Servicio'] = df['Hora'].apply(asignar_servicio)
@@ -206,20 +249,14 @@ desglose_factura = pd.DataFrame([{
     'Neto_Factura': neto_factura
 }])
 
-# ---------------- Preparar nombres de archivo con periodo en formato español DD-MM-YYYY ----------------
-fechas = pd.to_datetime(df['Fecha']).dt.date
-if fechas.empty:
-    inicio = fin = datetime.now().date()
-else:
-    inicio = fechas.min()
-    fin = fechas.max()
-
+# ---------------- Preparar nombres de archivo y carpeta de corte ----------------
 inicio_str = inicio.strftime('%d-%m-%Y')
 fin_str = fin.strftime('%d-%m-%Y')
-if inicio == fin:
-    periodo_str = inicio_str
-else:
-    periodo_str = f"{inicio_str}_a_{fin_str}"
+periodo_str = inicio_str if inicio == fin else f"{inicio_str}_a_{fin_str}"
+
+folder_name = f"corte_{inicio_str}_a_{fin_str}"
+OUT_CARPETA = os.path.join(OUT_DIR, folder_name)
+os.makedirs(OUT_CARPETA, exist_ok=True)
 
 pdf_name = f"reporte_periodo_{periodo_str}.pdf"
 resumen_xlsx = f"resumen_diario_{periodo_str}.xlsx"
@@ -227,18 +264,17 @@ detalle_csv = f"detalle_asistencias_{periodo_str}.csv"
 asist_xlsx = f"asistencias_por_becado_{periodo_str}.xlsx"
 desglose_xlsx = f"desglose_factura_{periodo_str}.xlsx"
 
-pdf_path = os.path.join(OUT_DIR, pdf_name)
-resumen_path = os.path.join(OUT_DIR, resumen_xlsx)
-detalle_path = os.path.join(OUT_DIR, detalle_csv)
-asist_path = os.path.join(OUT_DIR, asist_xlsx)
-desglose_path = os.path.join(OUT_DIR, desglose_xlsx)
+pdf_path = os.path.join(OUT_CARPETA, pdf_name)
+resumen_path = os.path.join(OUT_CARPETA, resumen_xlsx)
+detalle_path = os.path.join(OUT_CARPETA, detalle_csv)
+asist_path = os.path.join(OUT_CARPETA, asist_xlsx)
+desglose_path = os.path.join(OUT_CARPETA, desglose_xlsx)
 
 # ---------------- Exportar auxiliares con safe_save ----------------
 def save_resumen_excel(path):
     # Escribe resumen y añade hoja 'Desglose' con el desglose fiscal
     with pd.ExcelWriter(path, engine='openpyxl') as writer:
         resumen.to_excel(writer, sheet_name='Resumen', index=False)
-        # Añadir hoja con desglose
         desglose_factura.to_excel(writer, sheet_name='Desglose', index=False)
 
 def save_detalle_csv(path):
@@ -374,7 +410,7 @@ def save_pdf(path):
 
 safe_save(save_pdf, pdf_path)
 
-print("Reportes generados:")
+print("Reportes generados en carpeta:", OUT_CARPETA)
 print(" PDF:", pdf_path)
 print(" Resumen Excel (con hoja 'Desglose'):", resumen_path)
 print(" Detalle CSV:", detalle_path)
